@@ -1,6 +1,6 @@
 {
   "name": "@nycopportunity/wp-archive-vue",
-  "version": "1.1.3",
+  "version": "1.2.0",
   "description": "Creates a reactive filterable interface for a posts archive.",
   "main": "src/archive.vue",
   "scripts": {
