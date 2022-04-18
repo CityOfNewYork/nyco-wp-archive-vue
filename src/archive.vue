@@ -127,24 +127,25 @@
       maps: function() {
         return {
           terms: terms => ({
-            active: false,
+            // checked: false (determined by the initial interaction)
+            active: false, // For use with regions and aria-hidden
             name: terms.labels.archives,
             slug: terms.name,
-            checkbox: false,
+            checkbox: false, // wether the trigger is a checkbox
             toggle: true,
             filters: terms.terms.map(filters => ({
               id: filters.term_id,
               name: filters.name,
               slug: filters.slug,
               parent: terms.name,
-              active: (
-                  this.query.hasOwnProperty(terms.name) &&
-                  this.query[terms.name].includes(filters.term_id)
-                ),
+              active: ( // for use with setting the tabindex value
+                this.query.hasOwnProperty(terms.name) &&
+                this.query[terms.name].includes(filters.term_id)
+              ),
               checked: (
-                  this.query.hasOwnProperty(terms.name) &&
-                  this.query[terms.name].includes(filters.term_id)
-                )
+                this.query.hasOwnProperty(terms.name) &&
+                this.query[terms.name].includes(filters.term_id)
+              )
             }))
           }),
           posts: p => ({
@@ -273,6 +274,48 @@
           code: 'en',
           path: ''
         };
+      },
+
+      /**
+       * By default the application returns paged results, this computed property
+       * adds all visible posts to a single array to show.
+       *
+       * @return  {Array}  All visible posts in one array
+       */
+      postsFlat() {
+        let posts = this.posts.filter(page => {
+          return (page && page.show) ? page.posts : false;
+        }).map(page => {
+          return page.posts;
+        });
+
+        return posts.flat();
+      },
+
+      /**
+       * Find the total visible post by mapping each shown page and adding the
+       * number of posts.
+       *
+       * @return  {Number}  Representing the total visible posts
+       */
+      totalVisible: function() {
+        let show = this.posts.map(page => {
+          return (page && page.show) ? page.posts.length : 0;
+        });
+
+        return (show.length) ?
+          show.reduce((acc, cur) => acc + cur, 0) : 0;
+      },
+
+      /**
+       * Return the total number of checked filters
+       *
+       * @return  {Number}  Number of checked filters
+       */
+      totalFilters: function() {
+        return this.terms.reduce((acc, cur) => {
+          return acc + cur.filters.filter(f => f.checked).length
+        }, 0);
       }
     },
     methods: {
@@ -329,6 +372,7 @@
         Object.keys(this.history.map).map(key => {
           if (q.hasOwnProperty(this.history.map[key])) {
             q[key] = q[this.history.map[key]];
+
             delete q[this.history.map[key]];
           }
         });
@@ -397,6 +441,16 @@
         let term = event.data.id || false;
 
         if (term) {
+          // set the individual filter to checked
+          this.$set(event.data, 'checked', !event.data.checked);
+
+          // check the parent taxonomy if all filters are checked,
+          // set parent to truthy checked state if so
+          let tax = this.terms.find(t => t.slug === taxonomy);
+          let checked = (tax.filters.filter(t => t.checked).length === tax.filters.length);
+
+          this.$set(tax, 'checked', checked);
+
           this.filter(taxonomy, term);
         } else {
           this.filterAll(taxonomy);
@@ -415,6 +469,7 @@
        */
       toggle: function(event) {
         let taxonomy = event.data.parent;
+
         this.filterAll(taxonomy);
 
         return this;
@@ -453,14 +508,19 @@
        */
       filterAll: function(taxonomy) {
         let tax = this.terms.find(t => t.slug === taxonomy);
-        let checked = !(tax.checked);
+
+        // The terms may not have the checked state available. If not use the
+        // state of all the filters in the taxonomy.
+        let checked = (tax.hasOwnProperty('checked'))
+          ? !(tax.checked) : !(tax.filters.filter(t => t.checked).length === tax.filters.length);
 
         this.$set(tax, 'checked', checked);
 
         let terms = tax.filters.map(term => {
-            this.$set(term, 'checked', checked);
-            return term.id;
-          });
+          this.$set(term, 'checked', checked);
+
+          return term.id;
+        });
 
         this.updateQuery(taxonomy, (checked) ? terms : []);
 
@@ -483,6 +543,7 @@
           // hide all of the posts
           this.posts.map((value, index) => {
             if (value) this.$set(this.posts[index], 'show', false);
+
             return value;
           });
 
@@ -500,18 +561,18 @@
       /**
        * A function to reset the filters to "All Posts."
        *
-       * @param  {Object}  event  The taxonomy slug of the filter
-       *
        * @return {Promise}        Resolves after resetting the filter
        */
       reset: function(event) {
-        return new Promise(resolve => { // eslint-disable-line no-undef
-          let taxonomy = event.data.slug;
-          if (this.query.hasOwnProperty(taxonomy)) {
-            this.$set(this.query, taxonomy, []);
-            resolve();
-          }
-        });
+        for (let index = 0; index < this.terms.length; index++) {
+          this.updateQuery(this.terms[index].slug, []);
+
+          this.$set(this.terms[index], 'checked', false);
+
+          this.terms[index].filters.forEach(f => {
+            this.$set(f, 'checked', false);
+          });
+        }
       },
 
       /**
@@ -524,18 +585,19 @@
        *                          query
        */
       paginate: function(event) {
-        event.preventDefault();
-
         // The change is the next page as well as an indication of what
         // direction we are moving in for the queue.
         let change = parseInt(event.target.dataset.amount);
         let page = this.query.page + change;
+
+        event.preventDefault();
 
         return new Promise(resolve => { // eslint-disable-line no-undef
           this.$set(this.query, 'page', page);
           this.$set(this.posts[this.query.page], 'show', true);
 
           this.queue([0, change]);
+
           resolve();
         });
       },
@@ -691,6 +753,7 @@
           for (let i = 0; i < keys.length; i++) {
             let header = response.headers.get(headers[keys[i]]);
             let value = (isNaN(header)) ? header : (parseInt(header) || 0);
+
             headers[keys[i]] = value;
           }
 

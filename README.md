@@ -1,6 +1,19 @@
 # WordPress Archive Vue
 
-This [Vue.js](https://vuejs.org/) app creates a reactive filterable interface for a post archive on a WordPress site. The app is intended to be configurable for any post type (including custom post types). It uses the browsers URL search parameters to build a query to the [WordPress REST API](https://developer.wordpress.org/rest-api/) for retrieving taxonomy, term, and post data. It supports multilingual sites with [WPML](https://wpml.org/) by retrieving the lang attribute set on the html lang tag and using it with the [languages in directory settings](https://wpml.org/documentation/getting-started-guide/language-setup/language-url-options/#different-languages-in-directories). The app supports customized HTML templates with methods and computed properties. Extend it with a parent component and configure with your own template, scripts, and styles. See the example below for more details.
+This [Vue.js](https://vuejs.org/) app creates a reactive interface for a WordPress archive for any post type (including custom post types). It provides most of the functionality (clickable post taxonomy filters, window location history support, "show more" pagination, and predefined methods and computed properties listed below) while allowing designers and developers to use their own HTML templates, scripts, and stylesheets. Live demonstrations can be seen on [access.nyc.gov/programs](https://access.nyc.gov/programs) and [working.nyc.gov/programs](https://working.nyc.gov/programs).
+
+The app is intended to be installed via NPM and extended by a parent Vue.js application. You can configure with your own HTML template, scripts, and stylesheets. Usage details are described below.
+
+## Details
+
+* The application requires Vue.js `^2.6.12`
+
+* It uses the browser's history and URL search parameters to build a fetch query for the [WordPress REST API](https://developer.wordpress.org/rest-api/) for retrieving taxonomy, term, and post data.
+
+* It supports multilingual sites using [WPML](https://wpml.org/) configured with ["languages in directory" settings](https://wpml.org/documentation/getting-started-guide/language-setup/language-url-options/#different-languages-in-directories).
+
+* Examples can be seen on [ACCESS NYC](https://github.com/CityOfNewYork/ACCESS-NYC) and [Working NYC](https://github.com/CityOfNewYork/ACCESS-NYC). The source code can be inspected in their respective repositories.
+
 
 ## Usage
 
@@ -9,65 +22,150 @@ This [Vue.js](https://vuejs.org/) app creates a reactive filterable interface fo
 Install this dependency in your theme:
 
 ```shell
-$ npm install @nycopportunity/wp-archive-vue
+npm install @nycopportunity/wp-archive-vue
 ```
 
-The following example is based on the implementation in the [ACCESS NYC WordPress theme](https://github.com/CityOfNewYork/ACCESS-NYC/tree/main/wp-content/themes/access). The live example can be seen on [access.nyc.gov/programs](https://access.nyc.gov/programs/). The example notably uses the [Vue.js createElement](https://vuejs.org/v2/guide/render-function.html#createElement-Arguments) method and pre-rendering features to avoid the use of unsafe `eval()` method (creating code from strings) by the application. However, this implementation method is optional and it can be mounted to a Vue instance in a more traditional fashion.
+The example notably uses the [Vue.js createElement](https://vuejs.org/v2/guide/render-function.html#createElement-Arguments) method and pre-rendering features to avoid the use of unsafe `eval()` method (creating code from strings) by the application. However, this implementation method is optional and it can be mounted to a Vue instance in a more traditional fashion.
 
 ### Register a REST route for terms
 
-It is recommended to [register a new REST route](https://developer.wordpress.org/reference/functions/register_rest_route/) in your WordPress site that will return the taxonomy and terms data for the post type that will be queried. This example uses the [Transients API](https://developer.wordpress.org/apis/handbook/transients/) to cache requests results for performance.
+It is recommended to [register a new REST route](https://developer.wordpress.org/reference/functions/register_rest_route/) in your WordPress site that will return the taxonomy and terms data for the post type that will be queried. This example uses the [Transients API](https://developer.wordpress.org/apis/handbook/transients/) to cache requests results for performance. It also provides options for specifying the post type, empty term, and cache handling. This snippet can be dropped in as a single file (**register-rest-routes.php**) in the "must use" plugin directory.
+
+Once the below route is registered the terms can be viewed or queried at `/wp-json/api/v1/terms/?post_type[]=post&cache=0`.
+
+**Note**. It is also suitable and possible to provide term filters using server-side templates. A static JSON object can be supplied and mounted to the application at runtime.
 
 ```php
+<?php
+
+/**
+ * Plugin Name: Register REST Routes
+ * Description: Registers custom WordPress REST API routes
+ */
+
 /**
  * Register REST Route shouldn't be done before the REST api init hook so we
  * will hook into that action.
  */
 add_action('rest_api_init', function() {
   /**
-   * Returns a list of public taxonomies and their terms. Transients can greatly
-   * improve the performance of the REST API so it is recommended to use them.
+   * Configuration
+   */
+
+  $v = 'api/v1'; // namespace for the current version of the API
+
+  $exp = WEEK_IN_SECONDS; // expiration of the transient caches
+
+  /**
+   * Returns a list of public taxonomies and their terms. The argument post_type[]=
+   * can be uses to get registered taxonomies for a particular post type. Multiple
+   * post types can be combined.
    *
-   * @param  {String} $namespace  Namespace for the route
-   * @param  {String} $route      Endpoint for the route
-   * @param  {Array}              An array including REST methods and a function
-   *                              that processes the request
+   * @param   String  $namespace  Namespace for the route
+   * @param   String  $route      Endpoint for the route
+   * @param   Array               An array including REST methods and
+   *                              a function that processes the request
    *
-   * @return {Object}             A WordPress REST Response
+   * @return  Object              A WordPress REST Response
    */
   register_rest_route('api/v1', '/terms/', array(
     'methods' => 'GET',
-    'callback' => function(WP_REST_Request $request) use ($transients) {
-      $lang = (defined('ICL_LANGUAGE_CODE')) ? '_' . ICL_LANGUAGE_CODE : '';
+    'permission_callback' => '__return_true',
 
-      $data = get_transient('rest_terms_json' . $lang);
+    /**
+     * Callback for the terms endpoint.
+     *
+     * @param   WP_REST_Request  $request    Instance WP REST Request
+     *
+     * Acceptable REST parameters
+     *
+     * @param   Array            post_type   The desired post type or types
+     * @param   Boolean          hide_empty
+     * @param   Boolean          cache       Wether to use transient cache results
+     *
+     * @return  Array                        Array of taxonomies and their terms
+     */
+    'callback' => function(WP_REST_Request $request) {
+      $params = $request->get_params();
+
+      /**
+       * Query Parameter Options
+       */
+
+      // What post type terms to query
+      $postTypes = (isset($params['post_type'])) ?
+        $params['post_type'] : false;
+
+      // Wether to hide terms with no posts
+      $hideEmpty = (isset($params['hide_empty'])) ?
+        filter_var($params['hide_empty'], FILTER_VALIDATE_BOOLEAN) : false;
+
+      // Wether to use cached terms
+      $cache = (isset($params['cache'])) ?
+        filter_var($params['cache'], FILTER_VALIDATE_BOOLEAN) : true;
+
+      /**
+       * Process query params
+       */
+
+      $type = ($postTypes) ? implode('_', $postTypes) : '';
+
+      $empty = ($hideEmpty) ? $hideEmpty : '';
+
+      $lang = (defined('ICL_LANGUAGE_CODE')) ? ICL_LANGUAGE_CODE : '';
+
+      $key = implode('_', ['rest_terms_json', $type, $empty, $lang]);
+
+      $data = ($cache) ? get_transient($key) : false;
 
       if (false === $data) {
         $data = [];
 
-        // Get public taxonomies and build our initial assoc. array
-        foreach (get_taxonomies(array(
+        $query = array(
           'public' => true,
           '_builtin' => false
-        ), 'objects') as $taxonomy) {
-            $data[] = array(
-              'name' => $taxonomy->name,
-              'labels' => $taxonomy->labels,
-              'taxonomy' => $taxonomy,
-              'terms' => array()
-            );
+        );
+
+        // Get public taxonomies and build our initial assoc. array
+        foreach (get_taxonomies($query, 'objects') as $tax) {
+          if ($type != '' && 0 === count(array_intersect($postTypes, $tax->object_type))) {
+            continue;
+          }
+
+          $data[] = array(
+            'taxonomy' => $tax,
+            'terms' => []
+          );
         }
 
         // Get the terms for each taxonomy
-        $data = array_map(function ($tax) {
-          $tax['terms'] = get_terms(array(
-            'taxonomy' => $tax['name'],
-            'hide_empty' => false,
-          ));
+        $data = array_map(function($tax) use ($postTypes, $hideEmpty) {
+          // Get used terms limited to the post type, requires
+          // a work around by getting all the posts.
+          if ($postTypes) {
+            foreach ($postTypes as $postType) {
+              $posts = get_posts(array(
+                'fields' => 'ids',
+                'post_type' => $postType,
+                'posts_per_page' => -1,
+              ));
+
+              $tax['terms'] = wp_get_object_terms($posts, $tax['taxonomy']->name, ['ids']);
+            }
+          // Get all terms regardless of post type or count.
+          } else {
+            $tax['terms'] = get_terms(array(
+              'taxonomy' => $tax['taxonomy']->name,
+              'hide_empty' => $hideEmpty
+            ));
+          }
+
           return $tax;
         }, $data);
 
-        set_transient('rest_terms_json' . $lang, $data, WEEK_IN_SECONDS);
+        if ($cache) {
+          set_transient($key, $data, WEEK_IN_SECONDS);
+        }
       }
 
       $response = new WP_REST_Response($data); // Create the response object
@@ -80,12 +178,21 @@ add_action('rest_api_init', function() {
 });
 ```
 
-### Configure the component
+### Configure the Front-end Component
 
-Create a proxy module that extends the archive methods and passes your desired configuration for the app. For the sake of this example it can be named **my-archive.js**.
+This front-end example uses three files that are imported using the following hierarchy. It is not necessary to set them up this way, however, this is how the templates are organized for ACCESS NYC and Working NYC.
 
-```vue
-<script>
+```
+📄 main.js
+└ 📄 programs-archive.vue
+  └ 📄 programs-archive.js
+```
+
+#### Filename: **programs-archive.js**
+
+This is the application component logic that extends the archive app, enabling you to pass your desired configuration to the app.
+
+```javascript
 import Archive from '@nycopportunity/wp-archive-vue/src/archive.vue';
 
 export default {
@@ -108,16 +215,9 @@ export default {
        * @param {String} programs  This is based on the 'type' setting above
        */
       endpoints: {
-        terms: '/wp-json/api/v1/terms',
+        terms: '/wp-json/api/v1/terms?post_type[]=programs' + ((process.env.NODE_ENV === 'development') ? '&cache=0' : ''),
         programs: '/wp-json/wp/v2/programs'
       },
-
-      /**
-       * This is the domain for our local WordPress installation.
-       *
-       * @type {String}
-       */
-      domain: 'http://localhost:8080',
 
       /**
        * Each endpoint above will access a map to take the data from the request
@@ -129,13 +229,10 @@ export default {
        */
       maps: function() {
         return {
-          /**
-           * Programs endpoint data map
-           */
           programs: p => p,
 
           /**
-           * Terms endpoint data map
+           * Terms Map
            */
           terms: terms => ({
             name: terms.labels.archives,
@@ -146,41 +243,19 @@ export default {
               slug: filters.slug,
               parent: terms.name,
               active: (
-                  this.query.hasOwnProperty(terms.name) &&
-                  this.query[terms.name].includes(filters.term_id)
-                ),
+                this.query.hasOwnProperty(terms.name) &&
+                this.query[terms.name].includes(filters.term_id)
+              ),
               checked: (
-                  this.query.hasOwnProperty(terms.name) &&
-                  this.query[terms.name].includes(filters.term_id)
-                )
+                this.query.hasOwnProperty(terms.name) &&
+                this.query[terms.name].includes(filters.term_id)
+              )
             }))
           })
         };
       }
     };
-  },
-
-  /**
-   * @type {Object}
-   */
-  methods: {
-    /**
-     * Proxy for the click event that toggles the filter.
-     *
-     * @param   {Object}  toChange  A constructed object containing:
-     *                              event - The click event
-     *                              data  - The term object
-     *
-     * @return  {Object}            Vue Instance
-     */
-    change: function(toChange) {
-      this.$set(toChange.data, 'checked', !toChange.data.checked);
-
-      this.click(toChange);
-
-      return this;
-    }
-  },
+  }
 
   /**
    * The created hook starts the application
@@ -202,7 +277,6 @@ export default {
       .catch(this.error);
   }
 };
-</script>
 ```
 
 #### Configuration
@@ -247,26 +321,6 @@ maps: function() {
 }
 ```
 
-**Methods**
-
-`change` - *optional* (see demonstration)
-
-In the demonstration example the `change` method is used as a wrapper to pass the click method and invoke the primary method for adding posts to the archive view. This isn't required but you may add it to your app to change the properties of other components in the app such as the active state of the filters.
-
-```html
-<input type='checkbox' :value='filter.slug' :checked='filter.checked' @change='change({event: $event, data: filter})' />
-```
-
-```javascript
-change: function(toChange) {
-  this.$set(toChange.data, 'checked', !toChange.data.checked); // change the active state of the filter data
-
-  this.click(toChange); // invoke the main filtering method
-
-  return this;
-}
-```
-
 **Hooks**
 
 The `created` hook is required to initialize the application. At a minimum the following block is required create the initial request to the terms object.
@@ -281,6 +335,8 @@ this.getState()       // Get window.location.search (filter history)
 ### Create a view template
 
 This is where the reactive DOM for your view is added.
+
+#### Filename: **programs-archive.vue**
 
 ```vue
 <template>
@@ -330,7 +386,14 @@ This is where the reactive DOM for your view is added.
   </article>
 </main>
 </template>
+
+<script>
+  import ProgramsArchive from 'programs-archive.js';
+  export default ProgramsArchive;
+</script>
 ```
+
+In this example, you can see how the logic for the application above is imported into the view template via the `<script>` tag. However, in normal single file components they would be combined.
 
 #### Data
 
@@ -345,20 +408,27 @@ Data    | Description
 
 There are several computed properties that can be used in your application to create loading mechanisms and show pagination.
 
-Properties  | Description
-------------|-
-`filtering` | Wether posts are currently being filtered
-`lang`      | The language of the document (and query)
-`loading`   | Wether there are no posts to show but a query is being made
-`next`      | Wether there is another page with posts to display
-`none`      | Wether there posts to display from the modified query
-`previous`  | Wether there is a previous page with posts to display
+Properties     | Description
+---------------|-
+`filtering`    | Wether posts are currently being filtered.
+`lang`         | The language of the document (and query).
+`loading`      | Wether there are no posts to show but a query is being made.
+`next`         | Wether there is another page with posts to display.
+`none`         | Wether there posts to display from the modified query.
+`previous`     | Wether there is a previous page with posts to display.
+`postsFlat`    | By default the application returns paged results, this adds all visible posts to a single array.
+`totalVisible` | Find the total visible posts.
+`totalFilters` | Returns the total number of checked filters.
 
 #### Methods
 
-`click` - **required**
+The following methods are available to the view template to use.
+
+##### `click`
 
 The `click` method is the primary method included in the app that will invoke requests for new posts to be added to the archive. It accepts an object as an argument with the click event (`event`) an the term object (`data`). The only required properties to include in the term object are the taxonomy slug (`parent`) and the numerical ID of the WordPress taxonomy term (`id`).
+
+It can be added to the `@change` event for input elements such as checkboxes or the `@click` event for hyperlinks or buttons. The filter's checked property will be bound to the checked attribute of the filter.
 
 ```javascript
 this.click({
@@ -366,14 +436,21 @@ this.click({
   data: {
     parent: 'parent' // {String} Slug of the taxonomy
     id: 154          // {Number} ID of the taxonomy term object
-    // ...
   }
 });
 ```
 
-`toggle` - *optional*
+**Example usage**
 
-The `toggle` method will change the state of all the filters to active. If clicked again, it will toggle them to inactive. The main object argument for this method is similar to the `click` method, however, the only attribute that is required for the data object (`data`) is the taxonomy slug (`parent`).
+```html
+<input type="checkbox" :value="filter.slug" :checked="filter.checked" @change="click({event: $event, data: filter})" />
+```
+
+##### `toggle`
+
+The `toggle` method will change the state of all the filters to `checked: true`. If clicked again, it will toggle them to `checked: false`. The main object argument for this method is similar to the `click` method, however, the only attribute that is required for the data object (`data`) is the taxonomy slug (`parent`).
+
+It can be added to the `@click` event of a button.
 
 ```javascript
 this.toggle({
@@ -385,19 +462,51 @@ this.toggle({
 });
 ```
 
-There are several other methods available to your application. Take a look at the source code to see them.
+**Example usage**
+
+```html
+<button type="button" @click="toggle({event: $event, data: {parent: term.slug}})">Toggle all</button>
+```
+
+##### `reset`
+
+This method will clear set all filters in all taxonomies off.
+
+**Example usage**
+
+```html
+<button type="button" @click="reset">Clear filters</button>
+```
+
+##### `nextPage`
+
+The `nextPage` method will show the next page of results. The amount of pages can be set buy the `data-amount` attribute. This button can be conditionally hidden using the `next` computed property.
+
+**Example usage**
+
+```html
+<button @click="nextPage" v-if="next" data-amount="1">Show more</button>
+```
 
 ### Import and mount the app
 
-Finally, import the application and mount it to your application. The method below uses the `createElement` function because the `MyArchive` application will be pre-rendered when imported.
+Finally, import the application and mount it to your main application. The method below uses the `createElement` function because the `ProgramsArchive` application will be pre-rendered when imported.
+
+#### Filename: **main.js**
 
 ```javascript
 import Vue from 'vue/dist/vue.runtime.min';
-import MyArchive from 'my-archive.vue';
+import ProgramsArchive from 'programs-archive.vue';
 
 new Vue({
-  render: createElement => createElement(MyArchive)
+  render: createElement => createElement(ProgramsArchive)
 }).$mount('[data-js="programs"]');
+```
+
+```
+📄 main.js
+└ 📄 programs-archive.vue
+  └ 📄 programs-archive.js
 ```
 
 ## Contributing
@@ -405,19 +514,19 @@ new Vue({
 This module uses the [Vue.js CLI](https://cli.vuejs.org/) to run a simple application using a WordPress installation running on `localhost:8080`. Clone the repository and run `npm start` to start the application.
 
 ```shell
-$ git clone https://github.com/CityOfNewYork/nyco-wp-archive-vue.git
+git clone https://github.com/CityOfNewYork/nyco-wp-archive-vue.git
 ```
 
 ```shell
-$ cd nyco-wp-archive-vue
+cd nyco-wp-archive-vue
 ```
 
 ```shell
-$ npm install
+npm install
 ```
 
 ```shell
-$ npm start
+npm start
 ```
 
 **Output**
